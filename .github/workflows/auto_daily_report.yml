@@ -1,0 +1,51 @@
+name: 自动日报
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # UTC 11:00 = 北京时间 19:00
+
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  daily-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: 升级pip
+      run: |
+        python -m pip install --upgrade pip
+    
+    - name: 安装依赖
+      run: |
+        pip install -r requirements.txt
+        playwright install chromium
+        playwright install-deps chromium
+    
+    - name: 运行自动日报
+      env:
+        CHECKIN_USERNAME: ${{ secrets.CHECKIN_USERNAME }}
+        CHECKIN_PASSWORD: ${{ secrets.CHECKIN_PASSWORD }}
+        WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+        WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
+      run: |
+        python auto_daily_report.py
+    
+    - name: 上传日志
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: daily-report-logs-${{ github.run_number }}
+        path: |
+          daily_report.log
+          captcha_report.png
+          page_*.png
+        retention-days: 7
