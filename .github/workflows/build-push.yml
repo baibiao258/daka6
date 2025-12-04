@@ -26,22 +26,14 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 获取版本号
-      id: version
-      run: |
-        # 使用日期作为版本号 YYYY.MM.DD-HHMM
-        VERSION=$(date +'%Y.%m.%d-%H%M')
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Generated version: $VERSION"
-
     - name: 构建并推送镜像
       uses: docker/build-push-action@v6
       with:
         context: .
         push: true
         tags: |
+          ghcr.io/${{ github.repository }}:v1
           ghcr.io/${{ github.repository }}:latest
-          ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
           ghcr.io/${{ github.repository }}:${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
