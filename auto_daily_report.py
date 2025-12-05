@@ -586,18 +586,28 @@ async def main():
             logger.error("用法: python auto_daily_report.py [用户名] [密码]")
             return
     
-    # 判断是否在 GitHub Actions 或容器环境中运行（需要 headless 模式）
+    # 判断运行环境
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
     is_container = os.getenv('CONTAINER_ENV') == 'true' or os.path.exists('/.dockerenv')
-    use_headless = is_github_actions or is_container
+    # 默认使用 headless 模式，除非明确设置 HEADLESS=false
+    use_headless = os.getenv('HEADLESS', 'true').lower() != 'false'
     
     # 使用北京时间
     now_beijing = datetime.now(BEIJING_TZ)
     
+    # 确定环境名称
+    if is_github_actions:
+        env_name = "GitHub Actions"
+    elif is_container:
+        env_name = "容器"
+    else:
+        env_name = "本地"
+    
     logger.info(f"========== 自动日报开始 ==========")
     logger.info(f"时间: {now_beijing.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
     logger.info(f"用户: {username}")
-    logger.info(f"环境: {'GitHub Actions' if is_github_actions else '本地'}")
+    logger.info(f"环境: {env_name}")
+    logger.info(f"Headless 模式: {use_headless}")
     if wxpusher_app_token and wxpusher_uid:
         logger.info("通知: 已配置 WxPusher")
     
