@@ -8,9 +8,12 @@ import asyncio
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright, Page, Browser
 import logging
+
+# 北京时区 (UTC+8)
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 # 配置日志 - 只输出到控制台，GitHub Actions 会自动记录
 logging.basicConfig(
@@ -222,9 +225,9 @@ class AutoDailyReport:
             except:
                 logger.warning("未找到刷新按钮")
             
-            # 获取今天的日期
-            today = datetime.now().strftime('%Y-%m-%d')
-            logger.info(f"今天的日期: {today}")
+            # 获取今天的日期（北京时间）
+            today = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
+            logger.info(f"今天的日期: {today} (北京时间)")
             
             # 查找最新的报告日期
             try:
@@ -583,11 +586,16 @@ async def main():
             logger.error("用法: python auto_daily_report.py [用户名] [密码]")
             return
     
-    # 判断是否在 GitHub Actions 环境中运行
+    # 判断是否在 GitHub Actions 或容器环境中运行（需要 headless 模式）
     is_github_actions = os.getenv('GITHUB_ACTIONS') == 'true'
+    is_container = os.getenv('CONTAINER_ENV') == 'true' or os.path.exists('/.dockerenv')
+    use_headless = is_github_actions or is_container
+    
+    # 使用北京时间
+    now_beijing = datetime.now(BEIJING_TZ)
     
     logger.info(f"========== 自动日报开始 ==========")
-    logger.info(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"时间: {now_beijing.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
     logger.info(f"用户: {username}")
     logger.info(f"环境: {'GitHub Actions' if is_github_actions else '本地'}")
     if wxpusher_app_token and wxpusher_uid:
@@ -597,16 +605,16 @@ async def main():
     report = AutoDailyReport(
         username=username,
         password=password,
-        headless=is_github_actions  # GitHub Actions 中使用无头模式
+        headless=use_headless  # GitHub Actions 或容器环境中使用无头模式
     )
     
     # 运行日报
     success = await report.run()
     
-    # 获取当前时间信息
-    now = datetime.now()
-    date_str = now.strftime('%Y年%m月%d日')  # 年月日
-    time_str = now.strftime('%H:%M:%S')      # 时分秒
+    # 获取当前北京时间信息
+    now_beijing = datetime.now(BEIJING_TZ)
+    date_str = now_beijing.strftime('%Y年%m月%d日')  # 年月日
+    time_str = now_beijing.strftime('%H:%M:%S')      # 时分秒
     
     if success:
         title = "日报完成 ✅"
