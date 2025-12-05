@@ -37,5 +37,3 @@ jobs:
           ghcr.io/${{ github.repository }}:v2
           ghcr.io/${{ github.repository }}:latest
           ghcr.io/${{ github.repository }}:${{ github.sha }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
