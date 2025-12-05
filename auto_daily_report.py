@@ -15,6 +15,12 @@ import logging
 # 北京时区 (UTC+8)
 BEIJING_TZ = timezone(timedelta(hours=8))
 
+# 容器环境超时配置（单位：毫秒）
+# 容器在大陆，网络延迟较小，但为了稳定性仍然增加超时
+GOTO_TIMEOUT = 60000  # 页面导航超时
+SELECTOR_TIMEOUT = 30000  # 元素查找超时
+WAIT_TIMEOUT = 15000  # 一般等待超时
+
 # 配置日志 - 只输出到控制台，GitHub Actions 会自动记录
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +62,7 @@ class AutoDailyReport:
         self.login_url = "https://qd.dxssxdk.com/lanhu_yonghudenglu"
         self.browser: Browser = None
         self.page: Page = None
+        self.report_already_submitted = False  # 标记日报是否已提交
         
     async def solve_captcha(self) -> str:
         """
@@ -66,7 +73,7 @@ class AutoDailyReport:
         """
         try:
             # 等待验证码图片加载
-            await self.page.wait_for_selector('div.captcha-image img', timeout=5000)
+            await self.page.wait_for_selector('div.captcha-image img', timeout=WAIT_TIMEOUT)
             
             # 获取验证码图片
             captcha_img = await self.page.query_selector('div.captcha-image img')
@@ -115,11 +122,11 @@ class AutoDailyReport:
         
         try:
             # 访问登录页面
-            await self.page.goto(self.login_url, wait_until='networkidle', timeout=30000)
+            await self.page.goto(self.login_url, wait_until='networkidle', timeout=GOTO_TIMEOUT)
             logger.info("登录页面加载完成")
             
             # 等待页面加载
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
             attempt = 0
             while True:
@@ -128,7 +135,7 @@ class AutoDailyReport:
                 
                 try:
                     # 等待用户名输入框
-                    await self.page.wait_for_selector('input[type="text"][placeholder="请输入用户名"]', timeout=10000)
+                    await self.page.wait_for_selector('input[type="text"][placeholder="请输入用户名"]', timeout=SELECTOR_TIMEOUT)
                     
                     # 填写用户名
                     await self.page.fill('input[type="text"][placeholder="请输入用户名"]', self.username)
@@ -144,8 +151,8 @@ class AutoDailyReport:
                     if not captcha_text:
                         logger.error("验证码识别失败，跳过本次尝试")
                         # 刷新页面重试
-                        await self.page.reload(wait_until='networkidle')
-                        await asyncio.sleep(2)
+                        await self.page.reload(wait_until='networkidle', timeout=GOTO_TIMEOUT)
+                        await asyncio.sleep(3)
                         continue
                     
                     # 填写验证码
@@ -209,7 +216,7 @@ class AutoDailyReport:
             logger.info("检查今天的日报是否已提交...")
             
             # 点击"最近记录"标签
-            recent_tab = await self.page.wait_for_selector('div.tab-item:has-text("最近记录")', timeout=10000)
+            recent_tab = await self.page.wait_for_selector('div.tab-item:has-text("最近记录")', timeout=SELECTOR_TIMEOUT)
             if recent_tab:
                 await recent_tab.click()
                 logger.info("已点击'最近记录'标签")
@@ -217,7 +224,7 @@ class AutoDailyReport:
             
             # 点击刷新按钮
             try:
-                refresh_button = await self.page.wait_for_selector('button.refresh-btn', timeout=5000)
+                refresh_button = await self.page.wait_for_selector('button.refresh-btn', timeout=WAIT_TIMEOUT)
                 if refresh_button:
                     await refresh_button.click()
                     logger.info("已点击刷新按钮")
@@ -231,24 +238,94 @@ class AutoDailyReport:
             
             # 查找最新的报告日期
             try:
-                report_date_element = await self.page.wait_for_selector('span.report-date', timeout=5000)
+                report_date_element = await self.page.wait_for_selector('span.report-date', timeout=WAIT_TIMEOUT)
                 if report_date_element:
                     report_date = await report_date_element.inner_text()
                     logger.info(f"最新报告日期: {report_date}")
                     
                     if report_date == today:
-                        logger.info("✅ 今天的日报已提交")
+                        logger.info("✅ 日报已完成")
                         return True
                     else:
-                        logger.info("❌ 今天的日报未提交")
+                        logger.info("❌ 日报未完成，继续执行下一步")
                         return False
             except:
-                logger.info("未找到报告记录，今天的日报未提交")
+                logger.info("未找到报告记录，日报未完成，继续执行下一步")
                 return False
                 
         except Exception as e:
             logger.error(f"检查日报状态时出错: {e}")
             return False
+    
+    async def click_ai_generate_with_retry(self, max_retries: int = 10) -> bool:
+        """
+        点击AI生成报告按钮，失败时自动重试
+        
+        Args:
+            max_retries: 最大重试次数
+            
+        Returns:
+            是否生成成功
+        """
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"AI生成报告尝试 {attempt}/{max_retries}")
+            
+            try:
+                # 查找并点击"AI生成报告"按钮
+                ai_button = await self.page.wait_for_selector('button.ai-generate-btn', timeout=SELECTOR_TIMEOUT)
+                if ai_button:
+                    await ai_button.click()
+                    logger.info("✓ 已点击'AI生成报告'按钮")
+                else:
+                    logger.error("未找到'AI生成报告'按钮")
+                    continue
+                
+                # 等待生成结果（最多60秒）
+                for i in range(60):
+                    await asyncio.sleep(1)
+                    
+                    # 检查是否生成完成
+                    try:
+                        complete_toast = await self.page.query_selector('div.van-toast__text:has-text("AI生成完成")')
+                        if complete_toast:
+                            toast_visible = await complete_toast.is_visible()
+                            if toast_visible:
+                                logger.info("✅ AI生成完成")
+                                await asyncio.sleep(1)
+                                return True
+                    except:
+                        pass
+                    
+                    # 检查是否生成失败
+                    try:
+                        fail_toast = await self.page.query_selector('div.van-toast__text:has-text("AI生成失败")')
+                        if fail_toast:
+                            toast_visible = await fail_toast.is_visible()
+                            if toast_visible:
+                                logger.warning(f"⚠️ AI生成失败，准备重试...")
+                                await asyncio.sleep(2)
+                                break  # 跳出内层循环，进行重试
+                    except:
+                        pass
+                else:
+                    # 60秒超时，检查textarea是否有内容
+                    try:
+                        textarea = await self.page.query_selector('textarea.content-textarea')
+                        if textarea:
+                            content = await textarea.input_value()
+                            if content and len(content) > 10:
+                                logger.info("✅ AI生成完成（通过检查内容确认）")
+                                return True
+                    except:
+                        pass
+                    logger.warning("AI生成超时，准备重试...")
+                    
+            except Exception as e:
+                logger.error(f"AI生成报告出错: {e}")
+                await asyncio.sleep(2)
+        
+        logger.error(f"AI生成报告失败，已重试 {max_retries} 次")
+        return False
     
     async def submit_daily_report(self) -> bool:
         """
@@ -268,7 +345,7 @@ class AutoDailyReport:
             # 第一步：点击"账号列表"导航
             logger.info("第一步：查找并点击'账号列表'导航...")
             try:
-                account_nav = await self.page.wait_for_selector('span.nav-text:has-text("账号列表")', timeout=10000)
+                account_nav = await self.page.wait_for_selector('span.nav-text:has-text("账号列表")', timeout=SELECTOR_TIMEOUT)
                 if account_nav:
                     await account_nav.click()
                     logger.info("✓ 已点击'账号列表'导航")
@@ -276,31 +353,25 @@ class AutoDailyReport:
             except Exception as e:
                 logger.warning(f"点击账号列表失败: {e}")
             
-            # 第一步半：点击"展开"按钮
-            logger.info("第一步半：查找并点击'展开'按钮...")
+            # 第二步：点击"展开"按钮
+            logger.info("第二步：查找并点击'展开'按钮...")
             try:
-                # 尝试多种选择器来定位展开按钮
                 expand_button = None
-                
-                # 方法1：通过 data-v-4e8cfa01 属性和 class 定位
                 try:
-                    expand_button = await self.page.wait_for_selector('div.expand-icon', timeout=5000)
+                    expand_button = await self.page.wait_for_selector('div.expand-icon', timeout=WAIT_TIMEOUT)
                 except:
                     pass
                 
-                # 方法2：通过 img 的 alt 属性定位
                 if not expand_button:
                     try:
-                        expand_button = await self.page.wait_for_selector('img[alt="展开"]', timeout=5000)
-                        # 如果找到的是 img，需要点击其父元素 div
+                        expand_button = await self.page.wait_for_selector('img[alt="展开"]', timeout=WAIT_TIMEOUT)
                         expand_button = await expand_button.evaluate_handle('el => el.parentElement')
                     except:
                         pass
                 
-                # 方法3：通过包含 Frame.png 的 img 定位
                 if not expand_button:
                     try:
-                        expand_button = await self.page.wait_for_selector('img[src*="Frame.png"]', timeout=5000)
+                        expand_button = await self.page.wait_for_selector('img[src*="Frame.png"]', timeout=WAIT_TIMEOUT)
                         expand_button = await expand_button.evaluate_handle('el => el.parentElement')
                     except:
                         pass
@@ -315,28 +386,19 @@ class AutoDailyReport:
             except Exception as e:
                 logger.warning(f"点击展开按钮失败: {e}，继续执行后续步骤")
             
-            # 第二步：点击"生成报告"按钮
-            logger.info("第二步：查找并点击'生成报告'按钮...")
+            # 第三步：点击"生成报告"按钮（进入报告页面）
+            logger.info("第三步：查找并点击'生成报告'按钮...")
             try:
                 report_button = None
-                
-                # 尝试多种选择器来定位"生成报告"按钮
                 selectors = [
-                    'button.action-btn:has-text("生成报告")',  # 原始选择器
-                    'button:has-text("生成报告")',  # 简化选择器
-                    'div.account-actions button:has-text("生成报告")',  # 通过父容器定位
-                    '//button[contains(text(), "生成报告")]',  # XPath
+                    'button.action-btn:has-text("生成报告")',
+                    'button:has-text("生成报告")',
+                    'div.account-actions button:has-text("生成报告")',
                 ]
                 
                 for selector in selectors:
                     try:
-                        if selector.startswith('//'):
-                            # XPath 选择器
-                            report_button = await self.page.wait_for_selector(f'xpath={selector}', timeout=3000)
-                        else:
-                            # CSS 选择器
-                            report_button = await self.page.wait_for_selector(selector, timeout=3000)
-                        
+                        report_button = await self.page.wait_for_selector(selector, timeout=WAIT_TIMEOUT)
                         if report_button:
                             logger.info(f"✓ 使用选择器找到'生成报告'按钮: {selector}")
                             break
@@ -347,100 +409,64 @@ class AutoDailyReport:
                     await report_button.click()
                     logger.info("✓ 已点击'生成报告'按钮")
                     await asyncio.sleep(3)
-                    
-                    # 截图已禁用（减少 I/O）
                 else:
-                    logger.error("未找到'生成报告'按钮（尝试了所有选择器）")
-                    # 截图已禁用（减少 I/O）
+                    logger.error("未找到'生成报告'按钮")
                     return False
                     
             except Exception as e:
                 logger.error(f"查找'生成报告'按钮时出错: {e}")
                 return False
             
-            # 第三步：检查今天的日报是否已提交
+            # 第四步：检查今天的日报是否已提交
             has_submitted = await self.check_today_report_submitted()
             if has_submitted:
-                logger.info("✅ 今天的日报已提交，无需重复提交")
+                logger.info("✅ 日报已完成，无需重复提交")
+                self.report_already_submitted = True
                 return True
             
-            # 第四步：点击"确认"按钮（如果有弹窗）
+            # 第五步：点击"生成报告"标签（切换到生成报告页面）
+            logger.info("第五步：点击'生成报告'标签...")
             try:
-                confirm_button = await self.page.wait_for_selector('button.van-dialog__confirm:has-text("确认")', timeout=3000)
-                if confirm_button:
-                    await confirm_button.click()
-                    logger.info("✓ 已点击确认按钮")
-                    await asyncio.sleep(2)
-            except:
-                logger.info("没有发现确认弹窗")
-            
-            # 第五步：切换回"生成报告"标签
-            try:
-                generate_tab = await self.page.wait_for_selector('div.tab-item:has-text("生成报告")', timeout=5000)
+                generate_tab = await self.page.wait_for_selector('div.tab-item:has-text("生成报告")', timeout=WAIT_TIMEOUT)
                 if generate_tab:
                     await generate_tab.click()
-                    logger.info("✓ 已切换到'生成报告'标签")
+                    logger.info("✓ 已点击'生成报告'标签")
                     await asyncio.sleep(2)
             except:
                 logger.warning("未找到'生成报告'标签")
             
-            # 第六步：点击"AI生成报告"按钮
+            # 第六步：点击"AI生成报告"按钮（带重试机制）
             logger.info("第六步：点击'AI生成报告'按钮...")
-            try:
-                ai_button = await self.page.wait_for_selector('button.ai-generate-btn:has-text("AI生成报告")', timeout=10000)
-                if ai_button:
-                    await ai_button.click()
-                    logger.info("✓ 已点击'AI生成报告'按钮")
-                    
-                    # 等待AI生成中提示
-                    try:
-                        generating_toast = await self.page.wait_for_selector('div.van-toast__text:has-text("AI生成中")', timeout=5000)
-                        if generating_toast:
-                            logger.info("⏳ AI正在生成报告...")
-                    except:
-                        pass
-                    
-                    # 等待AI生成完成（最多等待60秒）
-                    logger.info("等待AI生成完成...")
-                    for i in range(60):
-                        try:
-                            complete_toast = await self.page.wait_for_selector('div.van-toast__text:has-text("AI生成完成")', timeout=1000)
-                            if complete_toast:
-                                logger.info("✓ AI生成完成")
-                                await asyncio.sleep(2)
-                                break
-                        except:
-                            continue
-                    else:
-                        logger.warning("AI生成可能超时，但继续尝试提交")
-                    
-            except Exception as e:
-                logger.error(f"点击AI生成报告按钮失败: {e}")
+            if not await self.click_ai_generate_with_retry():
+                logger.error("AI生成报告失败")
                 return False
             
             # 第七步：点击"提交报告"按钮
             logger.info("第七步：点击'提交报告'按钮...")
             try:
-                submit_button = await self.page.wait_for_selector('button.submit-btn:has-text("提交报告")', timeout=10000)
+                submit_button = await self.page.wait_for_selector('button.submit-btn', timeout=SELECTOR_TIMEOUT)
                 if submit_button:
-                    # 截图已禁用（减少 I/O）
-                    
                     await submit_button.click()
                     logger.info("✓ 已点击'提交报告'按钮")
-                    await asyncio.sleep(3)
                     
-                    # 检查是否有成功提示
-                    try:
-                        success_toast = await self.page.wait_for_selector('div.van-toast__text:has-text("报告提交成功")', timeout=5000)
-                        if success_toast:
-                            logger.info("✅ 报告提交成功！")
-                            
-                            # 截图已禁用（减少 I/O）
-                            
-                            return True
-                    except:
-                        logger.warning("未检测到成功提示，但提交操作已执行")
-                        return True
+                    # 等待提交结果
+                    for i in range(30):
+                        await asyncio.sleep(1)
+                        
+                        # 检查是否提交成功
+                        try:
+                            success_toast = await self.page.query_selector('div.van-toast__text:has-text("报告提交成功")')
+                            if success_toast:
+                                toast_visible = await success_toast.is_visible()
+                                if toast_visible:
+                                    logger.info("✅ 报告提交成功！")
+                                    return True
+                        except:
+                            pass
+                    
+                    # 超时但操作已执行
+                    logger.warning("未检测到成功提示，但提交操作已执行")
+                    return True
                         
             except Exception as e:
                 logger.error(f"点击提交报告按钮失败: {e}")
@@ -627,8 +653,17 @@ async def main():
     time_str = now_beijing.strftime('%H:%M:%S')      # 时分秒
     
     if success:
-        title = "日报完成 ✅"
-        message = f"""**日报提交完成！**
+        if report.report_already_submitted:
+            title = "日报已完成 ✅"
+            message = f"""**今日日报已提交！**
+
+📅 **日期**: {date_str}
+⏰ **时间**: {time_str} (北京时间)
+👤 **用户**: {username}
+✨ **状态**: 日报已完成，无需重复提交"""
+        else:
+            title = "日报完成 ✅"
+            message = f"""**日报提交完成！**
 
 📅 **日期**: {date_str}
 ⏰ **时间**: {time_str} (北京时间)
